@@ -26,7 +26,7 @@ freely, subject to the following restrictions:
 interface
 
 uses
-  DCU_In;
+  DCU_In, SysUtils;
 
 const {Fixup type constants}
   fxAddr = 1;
@@ -41,6 +41,7 @@ const {Fixup type constants}
   fxStart70 = 6;
   fxEnd70 = 7;
 
+  fxVirtMethodMSIL =$0A;
   fxStartMSIL = $0B;
   fxEndMSIL = $0C;
 
@@ -57,14 +58,28 @@ const {Fixup type constants}
   fxStart2010 = 0;
   fxEnd2010 = 1;
 
+type
+  TFxSizeTbl = array[0..fxMax]of SmallInt;
+
+const
+  fxSizeXE64: TFxSizeTbl = (
+    {0:} 0,0,-1,-1, 4,4,4,-1, {8:}4,-1,-1,-1, -1,-1,8,-1,
+    {10:}-1,8,-1{4 for 32-bit},8, 0,4,-1,4);
+  fxSizeXE32: TFxSizeTbl = (
+    {0:} 0,0,-1,-1, 4,4,4,-1, {8:}4,-1,-1,-1, -1,-1,8,-1,
+    {10:}-1,-1,4,-1, -1,-1,-1,-1);
+
 var
   fxStart: Byte = fxStart30;
   fxEnd: Byte = fxEnd30;
   fxJmpAddr: Byte = fxJmpAddr0;
   fxValid: set of 0..fxMax = [0..fxStart30-1];
+  fxSize: TFxSizeTbl;
+  fx8Byte: Boolean;
 
 const
   FixOfsMask = $FFFFFF;
+  FixOfsShift = 24;
 
 type
 
@@ -118,6 +133,38 @@ function GetFixupFor(CodePtr: TIncPtr; Size: Cardinal; StartOk: boolean;
 
 function FixupOk(Fix: PFixupRec): boolean;
 function ReportFixup(Fix: PFixupRec; Ofs: LongInt; UseHAl: boolean): boolean;
+
+type
+ {The code was added for reading .pdata of Win64}
+  TFixUpChkRec = record
+    Ofs: Word;
+    K: ShortInt;
+    Optional: Boolean;
+  end;
+
+  PPFixupTbl = ^TPFixupTbl;
+  TPFixupTbl = array[Word] of PFixupRec;
+
+  TFixUpReader = object
+   protected
+    function CheckSize(Sz: ULong): Boolean;
+    function SkipData0(Sz: ULong): Boolean;
+    function GetFixupAt(iFix: Integer; Ofs: ULong; var Fix: PFixupRec): Integer{iFix next or -1};
+   public
+    DP: TIncPtr;
+    DS: Cardinal;
+    FixCnt: integer;
+    FixTbl: PFixupRec;
+    procedure Init(ADP: Pointer; ADS: Cardinal);
+    function SkipStartFixup: Boolean;
+    function GetULong(Ofs: ULong; var Res: ULong): Boolean;
+    function ReadULong(var Res: ULong; var Fix: PFixupRec): Boolean;
+    function ReadULongNoFix(var Res: ULong): Boolean;
+    function ReadULongFix(var Res: ULong; var Fix: PFixupRec): Boolean;
+    function SkipNoFixData(Sz: ULong): Boolean;
+    function SkipMayBeFixData(Sz: ULong): Boolean;
+    function CheckFixups(Sz: ULong; const Fixups: array of TFixUpChkRec; ResTbl: PPFixupTbl): Boolean;
+  end;
 
 implementation
 
@@ -186,20 +233,24 @@ begin
 end ;
 
 procedure SetFixEnd;
-{Set FixUpEnd to the max(FixUpEnd,CodeFixups^.Ofs+4)
+{Set FixUpEnd to the max(FixUpEnd,CodeFixups^.Ofs+fxSize)
  if CodeFixups^.F is not fxStart or fxEnd}
 var
   CurOfs: Cardinal;
   F: Byte;
+  Sz: Integer;
   EP: TIncPtr;
 begin
   CurOfs := CodeFixups^.OfsF;
   F := TByte4(CurOfs)[3];
   CurOfs := CurOfs and FixOfsMask;
   if F in fxValid{F<fxStart} then begin
-    EP := CodeStart+CurOfs+4;
-    if EP>FixUpEnd then
-      FixUpEnd := EP;
+    Sz := fxSize[F];
+    if Sz>=0 then begin
+      EP := CodeStart+CurOfs+Sz{4};
+      if EP>FixUpEnd then
+        FixUpEnd := EP;
+    end;
   end ;
 end ;
 
@@ -269,7 +320,7 @@ begin
   if CodePtr+Size>CodeEnd then
     Exit {Memory block finished};
   Ofs := CodePtr-CodeStart;
-  if Size=4 {All fixups are 4 byte} then begin
+  if (Size=4 {All fixups are 4 byte})or fx8Byte and(Size=8) then begin
     SkipFixups(Ofs);
     if CodePtr<FixUpEnd then
       Exit {Can't intersect with some previous FixUp};
@@ -310,16 +361,16 @@ var
   Sz: Cardinal;
   L: integer;
 var
-  TD: TTypeDef;
+  TD: TBaseDef{TTypeDef};
   Member: TDCURec;
 begin
   Result := false;
   if (Fix=Nil)or(FixUnit=Nil) then
     Exit;
-  OpenAux;
+//!!!  OpenAux; - temp - debug fixups
   K := TByte4(Fix^.OfsF)[3];
-  PutSFmt('K%x ',[K]);
-  CloseAux;
+  PutSFmt('&K%x ',[K]);
+//!!!  CloseAux;
  // if Ofs<>0 then begin
     D := TUnit(FixUnit).GetGlobalAddrDef(Fix^.NDX,U);
     hDT := -1;
@@ -343,10 +394,11 @@ begin
     TUnit(FixUnit).PutAddrStr(Fix^.NDX,true{ShowNDX});
     {D := TUnit(FixUnit).GetAddrDef(Fix^.NDX);
     PutS(GetDCURecStr(D,Fix^.NDX,true));}
-    if TUnit(FixUnit).IsMSIL and(K=$A) then begin
+    if TUnit(FixUnit).IsMSIL and(K=fxVirtMethodMSIL) then begin
       Member := Nil;
       if (D<>Nil)and(D is TTypeDecl) then
         hDT := TTypeDecl(D).hDef;
+      TD := Nil;
       if hDT>=0 then
         TD := U.GetTypeDef(hDT);
       if TD<>Nil then begin
@@ -365,6 +417,179 @@ begin
     if L>0 then
       PutS('}');
  // end ;
+  Result := true;
+end ;
+
+{ TFixUpReader. }
+procedure TFixUpReader.Init(ADP: Pointer; ADS: Cardinal);
+var
+  Fix0: Integer;
+begin
+  DP := ADP;
+  DS := ADS;
+  FixCnt := CurUnit.GetFixupsFor(ADP,ADS,FixTbl);
+end ;
+
+function TFixUpReader.SkipStartFixup: Boolean;
+{Skip the fixup, which marks the start of the procedure or const data}
+begin
+  Result := false;
+  if FixCnt<=0 then
+    Exit;
+  if FixTbl^.OfsF<>DP-CurUnit.DataBlPtr then
+    Exit {K=0,Ofs=BlOfs};
+  Inc(FixTbl);
+  Dec(FixCnt);
+  Result := true;
+end ;
+
+function TFixUpReader.CheckSize(Sz: ULong): Boolean;
+begin
+  Result := Sz<=DS;
+  //Use quiet mode, no exceptions  raise Exception.CreateFmt('Error reading extra $%x bytes',[Sz-DS]);
+end ;
+
+function TFixUpReader.GetULong(Ofs: ULong; var Res: ULong): Boolean;
+begin
+  Result := false;
+  if not CheckSize(Ofs+SizeOf(ULong)) then
+    Exit;
+  Res := PULong(DP+Ofs)^;
+  Result := true;
+end ;
+
+function TFixUpReader.GetFixupAt(iFix: Integer; Ofs: ULong; var Fix: PFixupRec): Integer{iFix next or -1};
+var
+  F: PFixupRec;
+  FixOfs: ULong;
+begin
+  Fix := Nil;
+  Result := iFix;
+  if FixCnt<=iFix then
+    Exit;
+  F := FixTbl;
+  Inc(F,iFix);
+  FixOfs := F^.OfsF and FixOfsMask;
+  if FixOfs<Ofs then begin
+    Result := -1{Error};
+    Exit;
+  end ;
+  if FixOfs=Ofs then begin
+    Fix := F;
+    Inc(Result);
+   end
+  else
+    Fix := Nil;
+end ;
+
+function TFixUpReader.ReadULong(var Res: ULong; var Fix: PFixupRec): Boolean;
+var
+  Ofs,FixOfs: ULong;
+begin
+  Result := false;
+  if not CheckSize(SizeOf(ULong)) then
+    Exit;
+  Ofs := DP-CurUnit.DataBlPtr;
+  Fix := Nil;
+  if FixCnt>0 then begin
+    FixOfs := FixTbl^.OfsF and FixOfsMask;
+    if FixOfs<Ofs then
+      Exit;
+    if FixOfs=Ofs then begin
+      Fix := FixTbl;
+      Inc(FixTbl);
+      Dec(FixCnt);
+    end ;
+  end ;
+  Res := PUlong(DP)^;
+  Result := SkipData0(SizeOf(ULong));
+end ;
+
+function TFixUpReader.ReadULongNoFix(var Res: ULong): Boolean;
+var
+  Fix: PFixupRec;
+begin
+  if ReadULong(Res,Fix) then
+    Result := Fix=Nil
+  else
+    Result := false;
+end ;
+
+function TFixUpReader.ReadULongFix(var Res: ULong; var Fix: PFixupRec): Boolean;
+begin
+  if ReadULong(Res,Fix) then
+    Result := Fix<>Nil
+  else
+    Result := false;
+end ;
+
+function TFixUpReader.SkipData0(Sz: ULong): Boolean;
+var
+  EndOfs: ULong;
+begin
+  Result := true;
+  EndOfs := DP-CurUnit.DataBlPtr+Sz;
+  if FixCnt<=0 then
+    Exit;
+  if FixTbl^.OfsF and FixOfsMask<EndOfs then
+    Result := false;
+    //raise Exception.CreateFmt('Fixup in data at $%x bytes to the end of block',[DS-Sz]);
+  Inc(DP,Sz);
+  Dec(DS,Sz);
+end ;
+
+function TFixUpReader.SkipNoFixData(Sz: ULong): Boolean;
+begin
+  Result := CheckSize(Sz) and SkipData0(Sz);
+end ;
+
+function TFixUpReader.SkipMayBeFixData(Sz: ULong): Boolean;
+var
+  EndOfs: ULong;
+begin
+  Result := false;
+  if not CheckSize(Sz) then
+    Exit;
+  if not SkipData0(Sz) then begin
+    EndOfs := DP-CurUnit.DataBlPtr;
+    while (FixCnt>0)and(FixTbl^.OfsF and FixOfsMask<EndOfs) do begin
+      Inc(FixTbl);
+      Dec(FixCnt);
+    end ;
+  end ;
+  Result := true;
+end ;
+
+function TFixUpReader.CheckFixups(Sz: ULong; const Fixups: array of TFixUpChkRec; ResTbl: PPFixupTbl): Boolean;
+var
+  Base: ULong;
+  i,iFix: Integer;
+  Fix: PFixupRec;
+  fxKind: Integer;
+begin
+  Result := false;
+  if not CheckSize(Sz) then
+    Exit;
+  Base := DP-CurUnit.DataBlPtr;
+  iFix := 0;
+  for i := Low(Fixups) to High(Fixups) do begin
+    iFix := GetFixupAt(iFix, Base+Fixups[i].Ofs, Fix);
+    if iFix<0 then
+      Exit{Error};
+    if Fix<>Nil then begin
+      fxKind := Fixups[i].K;
+      if (fxKind>=0)and(fxKind<>Fix^.OfsF shr FixOfsShift) then
+        Exit;
+     end
+    else if not Fixups[i].Optional then
+      Exit;
+    if ResTbl<>Nil then
+      ResTbl^[i] := Fix;
+  end;
+  Inc(DP,Sz);
+  Dec(DS,Sz);
+  Inc(FixTbl,iFix);
+  Dec(FixCnt,iFix);
   Result := true;
 end ;
 

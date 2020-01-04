@@ -27,7 +27,7 @@ freely, subject to the following restrictions:
 interface
 
 uses
-  DasmDefs,DasmUtil;
+  DasmDefs,DasmUtil,{$IFNDEF XMLx86}DasmOpT{$ELSE}x86Dasm{$ENDIF};
 
 procedure Set80x86Disassembler{$IFDEF I64}(I64: Boolean){$ENDIF};
 

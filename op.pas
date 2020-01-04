@@ -1614,8 +1614,6 @@ const
   );
 
 function PutSt(M: integer): boolean;
-var
-  Y: integer;
 begin
   Result := false;
   if (M and $6)<>$2 then SetCmdArg(hnST);

@@ -44,8 +44,16 @@ const
 
 const
   crJmp=0;
-  crJCond=1;
-  crCall=2;
+  crRet=1;
+  crJCond=2;
+  crCall=3;
+
+type
+ {$IFNDEF XMLx86}
+  TBMOpRec = string[15];
+ {$ELSE}
+  TBMOpRec = String;
+ {$ENDIF}
 
 type
   TReadCommandProc = function: boolean;
@@ -86,6 +94,7 @@ begin
 end ;
 
 end.
+
 
 
 

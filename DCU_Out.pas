@@ -31,7 +31,7 @@ uses
 
 type
   TIncPtr = PAnsiChar;
-  TDasmMode = (dasmSeq,dasmCtlFlow);
+  TDasmMode = (dasmSeq,dasmCtlFlow,dasmDataFlow);
   TOutFmt = (ofmtText,ofmtHTM);
 
 const
@@ -51,6 +51,7 @@ var
   ShowAuxValues: boolean=false;
   ResolveMethods: boolean=true;
   ResolveConsts: boolean=true;
+  FixCommentChars: boolean=true;
   ShowDotTypes: boolean=false;
   ShowSelf: boolean=false;
   ShowVMT: boolean=false;
@@ -68,7 +69,8 @@ var
 
 procedure SetShowAll;
 
-procedure PutCh(ch: AnsiChar);
+procedure PutCh(ch: AnsiChar); overload;
+procedure PutCh(Ch: Char); overload;
 procedure PutS(const S: AnsiString);
 procedure PutSFmt(const Fmt: AnsiString; const Args: array of const);
 function ShiftNLOfs(d: Integer): Integer{Old NLOfs};
@@ -80,6 +82,8 @@ procedure PutSpace;
 procedure SetShowAuxValues(V: Boolean);
 procedure OpenAux;
 procedure CloseAux;
+function HideAux: Integer; //Aux0
+procedure RestoreAux(Aux0: Integer);
 
 procedure RemOpen0;
 procedure RemOpen;
@@ -98,6 +102,10 @@ procedure PutStrConstQ(const S: AnsiString);
 
 procedure PutAddrDefStr(const S: AnsiString; hDef: integer);
 procedure PutMemRefStr(const S: AnsiString; Ofs: integer);
+
+procedure PutHexOffset(Ofs: LongInt);
+procedure PutInt(i: LongInt);
+procedure PutHex(i: LongInt);
 
 procedure MarkDefStart(hDef: integer);
 procedure MarkMemOfs(Ofs: integer);
@@ -119,6 +127,7 @@ function FixFloatToStr(const E: Extended): AnsiString;
 
 const
   cSoftNL=#0;
+  //cSepCh=#1;
   MaxOutWidth: Cardinal = 75;
   MaxNLOfs: Cardinal = 31 {Should be < Ord(' ')};
 
@@ -154,7 +163,6 @@ type
    protected
     FInfo: integer; FData: Pointer;
     FStarted: Boolean;
-    procedure WriteStart; virtual;
     procedure WriteEnd; virtual;
     procedure WriteCP(CP: PAnsiChar; Len: integer); virtual; abstract;
     procedure NL; virtual; abstract;
@@ -166,6 +174,7 @@ type
    public
     constructor Create;
     destructor Destroy; override;
+    procedure WriteStart; virtual;
     procedure Reset; virtual;
     property OutLineNum: integer read FOutLineNum;
     property AuxLevel: integer read FAuxLevel;
@@ -256,6 +265,7 @@ begin
   ShowAuxValues := true;
   ResolveMethods := true;
   ResolveConsts := true;
+  FixCommentChars := false;
   ShowDotTypes := true;
   ShowSelf := true;
   ShowVMT := true;
@@ -504,13 +514,19 @@ begin
     Dec(Len);
     if ch<' ' then begin
       if FNLOfs>MaxNLOfs then
-        Ch := AnsiChar(MaxNLOfs)
+        ch := AnsiChar(MaxNLOfs)
       else
-        Ch := AnsiChar(FNLOfs);
+        ch := AnsiChar(FNLOfs);
+     end 
+    else if (RemLevel>0)and FixCommentChars then begin
+      if ch='{' then
+        ch := '('
+      else if ch='}' then
+        ch := ')';
     end ;
-    Buf[BufLen] := Ch;
+    Buf[BufLen] := ch;
     Inc(BufLen);
-    if (ch<' ') then
+    if ch<' ' then
       FlushSoftNL(0);
   end ;
   FlushSoftNL(0);
@@ -716,6 +732,11 @@ begin
     Exit;
   Writer.BufChars(@Ch,1);
 end ;
+
+procedure PutCh(Ch: Char);
+begin
+  PutCh(AnsiChar(Ch));
+end;
 
 procedure PutS(const S: AnsiString);
 begin
@@ -1001,7 +1022,7 @@ begin
         '(','[': CP^ := '{';
       end ;
       if FixUpNames then begin
-        FS := {$IFDEF UNICODE}AnsiStrings.{$ENDIF}Format('K%x %s',[K,CurUnit.GetAddrStr(FP^.NDX,true)]);
+        FS := {$IFDEF UNICODE}AnsiStrings.{$ENDIF}Format('&K%x %s',[K,CurUnit.GetAddrStr(FP^.NDX,true)]);
         if FixS='' then
           FixS := FS
         else
@@ -1052,7 +1073,7 @@ begin
     end ;
     if Ok then begin
       //Result := IntToStr(V);
-     //!!!Добавить проверку на более простую запись в десятичном виде
+     //!!!Добавить проверку на боле?просту?запись ?де?тичном виде
       if V>=0 then
         Result := {$IFDEF UNICODE}AnsiStrings.{$ENDIF}Format('$%x',[V])
       else
@@ -1310,6 +1331,17 @@ begin
   Dec(Writer.FAuxLevel);
 end ;
 
+function HideAux: Integer; //Aux0
+begin
+  Result := Writer.FAuxLevel;
+  Writer.FAuxLevel := 0;
+end ;
+
+procedure RestoreAux(Aux0: Integer);
+begin
+  Writer.FAuxLevel := Aux0;
+end ;
+
 
 procedure RemOpen0;
 begin
@@ -1427,6 +1459,29 @@ begin
   if Ofs>=0 then
     PutStrInfoEnd;
 end ;
+
+procedure PutHexOffset(Ofs: LongInt);
+begin
+  if Ofs=0 then
+    Exit;
+  if Ofs>0 then
+    PutS('+')
+  else begin
+    PutS('-');
+    Ofs := -Ofs;
+  end ;
+  PutSFmt('$%x',[Ofs]);
+end;
+
+procedure PutInt(i: LongInt);
+begin
+  PutS(IntToStr(i));
+end;
+
+procedure PutHex(i: LongInt);
+begin
+  PutS(IntToHex(i,1));
+end;
 
 procedure MarkDefStart(hDef: integer);
 begin

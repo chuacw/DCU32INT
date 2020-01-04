@@ -38,6 +38,7 @@ uses
 type
   TDCURecTag = Byte{Char};
 
+  PNDX = ^TNDX;
   TNDX = integer;
 
   TNameRecData = packed record
@@ -46,17 +47,25 @@ type
     1: (bLen: Byte; dwLen: LongInt; lS: array[Word]of AnsiChar);
   end ;
 
+  TAnsiStrRec = record
+    CP: PAnsiChar;
+    Len: Cardinal;
+  end ;
+
   PName = ^TNameRec;
   TNameRec = object
    protected
     D: TNameRecData;
+    procedure GetStrInfo(var SR: TAnsiStrRec);
    public
     function IsEmpty: Boolean;
     function Get1stChar: AnsiChar;
     function GetStr: AnsiString;
-    function GetRightStr(dl: Cardinal): AnsiString;
+    function GetRightStr(dl: LongInt): AnsiString;
     function Eq(N: PName): Boolean;
     function EqS(const S: ShortString): Boolean;
+    function HasChar(ch: AnsiChar): Boolean;
+    function IsAuxName: Boolean;
   end ;
 
   PShortName = PShortString;
@@ -72,6 +81,8 @@ type
 
   TByteSet = set of Byte;
   TIncPtr = PAnsiChar;
+
+  PtrInt = {$IFDEF CPUX64}NativeInt{$ELSE}Integer{$ENDIF};
 
 const
   {Local flags}
@@ -92,37 +103,48 @@ const
   lfauxPropField = $80000000; //my own (AX) flag to mark the aux fields for properties
 
 type
-TDefNDX = TNDX;
+  TDefNDX = TNDX;
 
-PPNDXTbl = ^PNDXTbl;
-PNDXTbl = ^TNDXTbl;
-TNDXTbl = array[Byte]of TNDX;
+  PPNDXTbl = ^PNDXTbl;
+  PNDXTbl = ^TNDXTbl;
+  TNDXTbl = array[Byte]of TNDX;
 
-PDef = ^Pointer;
-PNameDef = ^TNameDef;
-TNameDef = packed record
-  Tag: TDCURecTag;
-  Name: TNameRec;
-end ;
+  PDef = ^Pointer;
+  PNameDef = ^TNameDef;
+  TNameDef = packed record
+    Tag: TDCURecTag;
+    Name: TNameRec;
+  end ;
 
-ulong = {$IFDEF D3dn}cardinal{$ELSE}LongWord{$ENDIF};
-TDCUFileTime = Integer;
+  ulong = {$IFDEF D3dn}cardinal{$ELSE}LongWord{$ENDIF};
+  PUlong = ^ulong;
 
-{$IFDEF D3dn}
-TQWORD = Comp;
-{$ELSE}
-TQWORD = Int64;
-{$ENDIF}
-PQWORD = ^TQWORD;
+  TDCUFileTime = Integer;
 
-TMemStrRef = object //Representation of string from DCU memory without copying chars
- protected
-  FChars: PAnsiChar;
-  FLen: Cardinal;
- public
-  function S: AnsiString;
-  property Len: Cardinal read FLen;
-end;
+  {$IFDEF D3dn}
+  TQWORD = Comp;
+  {$ELSE}
+  TQWORD = Int64;
+  {$ENDIF}
+  PQWORD = ^TQWORD;
+
+  TMemStrRef = object //Representation of string from DCU memory without copying chars
+   protected
+    FChars: PAnsiChar;
+    FLen: Cardinal;
+   public
+    function S: AnsiString;
+    property Len: Cardinal read FLen;
+  end;
+
+  TSegKind = (seg_none,seg_text{+OsX},seg_itext,seg_data{+OsX},seg_bss{+OsX},
+    seg_tls,seg_pdata,seg_xdata,seg_tbss{OsX},seg_rdata{OsX});
+
+  TSegKindTbl = array[Byte]of TSegKind;
+  PSegKindTbl = ^TSegKindTbl;
+
+function GetSegKindByName(Name: PShortName): TSegKind;
+
 
 type
   TScanState=record
@@ -194,7 +216,7 @@ procedure FreeName(NP: PName);
 implementation
 
 uses
-  DCU32{CurUnit};
+  DCU32{CurUnit},TypInfo;
 
 procedure DCUError(const Msg: String);
 var
@@ -271,6 +293,26 @@ function TMemStrRef.S: AnsiString;
 begin
   SetString(Result,FChars,FLen);
 end;
+
+function GetSegKindByName(Name: PShortName): TSegKind;
+var
+  i,L: Integer;
+  S: String;
+begin
+  Result := seg_none;
+  L := Length(Name^);
+  if (L<4)or(L>6) then
+    Exit;
+  S := 'seg_';
+  SetLength(S,L+3);
+  for i:=2 to L do
+    S[i+3] := Char(Name^[i]);
+  i := GetEnumValue(TypeInfo(TSegKind),S);
+  if i<0 then
+    i := 0;
+  Result := TSegKind(i);
+end ;
+
 
 procedure ChkSize(Sz: Cardinal);
 begin
@@ -587,7 +629,7 @@ begin
   else if NDXHi=-1 then
     Result := {$IFDEF UNICODE}AnsiStrings.{$ENDIF}Format('-$%x',[-NDXLo])
   else if NDXHi<0 then
-    Result := {$IFDEF UNICODE}AnsiStrings.{$ENDIF}Format('-$%x%8.8x',[-NDXHi-1,-NDXLo])
+    Result := {$IFDEF UNICODE}AnsiStrings.{$ENDIF}Format('-$%x%8.8x',[-NDXHi-Ord(NdxLo<>0),-NDXLo])
   else
     Result := {$IFDEF UNICODE}AnsiStrings.{$ENDIF}Format('$%x%8.8x',[NDXHi,NDXLo])
 end ;
@@ -665,67 +707,66 @@ begin
   Result := (@Self=Nil)or(D.bLen=0);
 end ;
 
-function TNameRec.Get1stChar: AnsiChar;
+procedure TNameRec.GetStrInfo(var SR: TAnsiStrRec);
 var
   L: Cardinal;
 begin
   if @Self=Nil then begin
-    Result := #0;
+    SR.CP := Nil;
+    SR.Len := 0;
     Exit;
   end ;
   L := D.bLen;
-  if L=0 then begin
+  if (L=$FF)and(CurUnit.Ver>=verD_XE2)and(CurUnit.Ver<verK1) then begin
+    SR.CP := @D.lS;
+    SR.Len := D.dwLen;
+   end
+  else begin
+    SR.CP := @D.S[1];
+    SR.Len := L;
+  end ;
+end ;
+
+function TNameRec.Get1stChar: AnsiChar;
+var
+  SR: TAnsiStrRec;
+begin
+  GetStrInfo(SR);
+  if SR.Len<=0 then begin
     Result := #0;
     Exit;
   end ;
-  if (L=$FF)and(CurUnit.Ver>=verD_XE2)and(CurUnit.Ver<verK1) then begin
-    if D.dwLen=0 then
-      Result := #0 //Paranoic
-    else
-      Result := D.lS[0];
-    Exit;
-  end ;
-  Result := D.S[1];
+  Result := SR.CP[0];
 end ;
 
 function TNameRec.GetStr: AnsiString;
 var
-  L: Cardinal;
+  SR: TAnsiStrRec;
 begin
-  if @Self=Nil then begin
-    Result := '';
-    Exit;
-  end ;
-  L := D.bLen;
-  if (L=$FF)and(CurUnit.Ver>=verD_XE2)and(CurUnit.Ver<verK1) then
-    SetString(Result,D.lS,D.dwLen)
-  else
-    Result := D.S;
+  GetStrInfo(SR);
+  SetString(Result,SR.CP,SR.Len);
 end ;
 
-function TNameRec.GetRightStr(dl: Cardinal): AnsiString;
+function TNameRec.GetRightStr(dl: LongInt): AnsiString;
 var
-  L: Cardinal;
+  L: Integer;
+  SR: TAnsiStrRec;
 begin
+  GetStrInfo(SR);
   if @Self=Nil then begin
     Result := '';
     Exit;
   end ;
-  L := D.bLen;
-  if (L=$FF)and(CurUnit.Ver>=verD_XE2)and(CurUnit.Ver<verK1) then begin
-    L := D.dwLen-dL;
-    if L<=0 then
-      Result := ''
-    else
-      SetString(Result,PAnsiChar(@D.lS[dl]),L);
-   end
+  L := SR.Len-dl;
+  if L<=0 then
+    Result := ''
   else
-    Result := System.Copy(D.S,dl+1,255);
+    SetString(Result,SR.CP+dl,L);
 end ;
 
 function TNameRec.Eq(N: PName): Boolean;
 var
-  L: Cardinal;
+  L: LongInt;
   CP,CP1: PAnsiChar;
 begin
   Result := false;
@@ -753,6 +794,38 @@ end ;
 function TNameRec.EqS(const S: ShortString): Boolean;
 begin
   Result := Eq(@S);
+end ;
+
+function TNameRec.HasChar(ch: AnsiChar): Boolean;
+var
+  i: Integer;
+  SR: TAnsiStrRec;
+begin
+  GetStrInfo(SR);
+  for i:=0 to SR.Len-1 do
+    if SR.CP[i]=ch then begin
+      Result := true;
+      Exit;
+    end;
+  Result := false;
+end ;
+
+function TNameRec.IsAuxName: Boolean;
+{ The name is aux and shouldn`t be shown if not requested }
+var
+  ch: AnsiChar;
+begin
+  Result := true;
+  ch := Get1stChar;
+  if ch='.' then
+    Exit;
+  if (CurUnit.Ver>=verD2009)and(CurUnit.Ver<verK1) then begin
+    if ch=':' then
+      Exit;
+    if HasChar('`') then
+      Exit;
+  end ;
+  Result := false;
 end ;
 
 end.

@@ -40,21 +40,21 @@ ExeDescription=
 [Directories]
 OutputDir=
 UnitOutputDir=..\dcu
-SearchPath=
+SearchPath=$(DELPHI)\Lib\Debug
 Packages=IBEVNT30;VCLDB30;VCL30;VCLX30;INETDB30;INET30;VCLDBX30;VCLSMP30;QRPT30;TEEUI30;TEEDB30;TEE30;DSS30
-Conditionals=I64
+Conditionals=I64,XMLx86
 DebugSourceDirs=
 UsePackages=0
 [Parameters]
-RunParams=-AC C:\DATA\D_XE4\iosDevice\debug\System.dcu 
+RunParams=C:\DATA\Delphi\XE2\lib\win64\debug\Data.Bind.Components.dcu -S -ADX -LFC:\PRG\DCU32PAS\Config.ini
 HostApplication=
 [Version Info]
 IncludeVerInfo=1
 AutoIncBuild=1
 MajorVer=1
-MinorVer=20
-Release=1
-Build=97
+MinorVer=26
+Release=6030
+Build=38
 Debug=0
 PreRelease=0
 Special=0
@@ -64,12 +64,12 @@ Locale=1033
 CodePage=1252
 [Version Info Keys]
 CompanyName=AX
-FileDescription=Parser of Delphi 2.0-8.0, 2005-2006 (.net and WIN32), 2007-2010 (WIN32 only),  XE (WIN32 only), XE2-XE7 (WIN32,WIN64,OSX32), Kylix 1.0-3.0
-FileVersion=1.20.1.97
+FileDescription=Parser of Delphi 2.0-8.0, 2005-2006 (.net and WIN32), 2007-2010 (WIN32 only),  XE (WIN32 only), XE2-XE7 (WIN32,WIN64,OSX32), XE8, 10 Seattle, 10.1 Berlin (WIN32,WIN64,OSX32,iOS simulator, iOS device 32/64 (no code),Android (no code)), Kylix 1.0-3.0
+FileVersion=1.26.6030.38
 InternalName=DCU32INT
-LegalCopyright=Copyright ©2000-2013, Alexei E. Hmelnov
+LegalCopyright=Copyright ©2000-2016, Alexei E. Hmelnov
 LegalTrademarks=
 OriginalFilename=DCU32INT
 ProductName=DCU32INT
-ProductVersion=1.16
+ProductVersion=1.20.1
 Comments=
